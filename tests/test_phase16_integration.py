@@ -9,68 +9,79 @@ class PassingSandboxBackend:
         assert request.workspace == "project"
         assert policy.network_enabled is False
         assert policy.read_only_root is True
-        return SandboxResult(0, "2 passed", "")
+        return SandboxResult(exit_code=0, stdout="2 passed", stderr="")
 
 
-async def test_workspace_security_and_test_execution_pipeline() -> None:
+async def test_workspace_security_and_testing_pipeline() -> None:
     workspace = Workspace()
     workspace.write(
-        "frontend/src/App.tsx",
-        "export const App = () => <main>Safe</main>;",
-        agent="frontend",
-        task_id="frontend-001",
-        reason="Create safe application shell",
+        "backend/app.py",
+        "def health():\n    return {'status': 'ok'}\n",
+        agent="backend",
+        task_id="backend-001",
+        reason="Create health endpoint",
     )
     workspace.write(
         "tests/test_app.py",
-        "def test_app():\n    assert True\n",
+        "def test_health():\n    assert True\n",
         agent="testing",
-        task_id="test-001",
-        reason="Add smoke test",
+        task_id="testing-001",
+        reason="Verify health endpoint",
     )
 
     files = {record.path: record.content for record in workspace.list_files()}
-    security = SecurityReviewer().scan_project(files)
-    assert security.blocking is False
+    security_report = SecurityReviewer().scan_project(files)
+    assert security_report.blocking is False
 
     sandbox = SecureSandboxExecutor(PassingSandboxBackend())
     runner = TestRunner(sandbox)
     result = await runner.run_case(
-        TestCase("suite-001", "Generated project tests", TestKind.INTEGRATION, ("pytest", "-q"), 30)
+        TestCase(
+            id="integration-001",
+            name="Generated project tests",
+            kind=TestKind.INTEGRATION,
+            command=("pytest", "-q"),
+            timeout_seconds=30,
+        )
     )
-
     assert result.status is TestStatus.PASSED
     assert result.stdout == "2 passed"
 
 
-async def test_security_gate_blocks_dangerous_project_before_execution() -> None:
+async def test_security_gate_blocks_project_before_execution() -> None:
     workspace = Workspace()
     workspace.write(
         "backend/config.py",
-        'API_KEY = "hard-coded-secret-value"',
+        'API_KEY = "this-is-a-real-looking-secret"\n',
         agent="backend",
-        task_id="backend-001",
+        task_id="backend-002",
         reason="Unsafe generated configuration",
     )
 
     files = {record.path: record.content for record in workspace.list_files()}
     report = SecurityReviewer().scan_project(files)
-
     assert report.blocking is True
     assert any(finding.rule_id == "SEC001" for finding in report.findings)
 
 
 def test_workspace_revision_conflict_protects_integration_state() -> None:
     workspace = Workspace()
-    workspace.write("README.md", "v1", agent="planner", task_id="p1", reason="initial")
-    current = workspace.read("README.md")
+    first = workspace.write(
+        "frontend/src/App.tsx",
+        "v1",
+        agent="frontend",
+        task_id="frontend-001",
+        reason="Initial UI",
+    )
+    assert first.revision == 1
+
     updated = workspace.write(
-        "README.md",
+        "frontend/src/App.tsx",
         "v2",
         agent="integrator",
-        task_id="i1",
-        reason="approved integration",
-        expected_revision=current.revision,
+        task_id="integration-001",
+        reason="Approved integration change",
+        expected_revision=1,
     )
     assert updated.revision == 2
-    assert workspace.read("README.md").content == "v2"
+    assert workspace.read("frontend/src/App.tsx").content == "v2"
