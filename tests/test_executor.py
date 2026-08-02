@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 import pytest
 
 from app.agents.definitions import AgentDefinition
@@ -6,7 +8,6 @@ from app.models.registry import Capability, ModelProfile, ModelRegistry
 from app.models.router import ModelRouter
 from app.providers.base import AIProvider, CompletionRequest, CompletionResponse
 from app.schemas.task import AgentTask
-from uuid import uuid4
 
 
 class OutputProvider(AIProvider):
