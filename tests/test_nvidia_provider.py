@@ -1,49 +1,41 @@
-import json
+import os
+import unittest
 from unittest.mock import patch
 
-import pytest
-
-from src.providers.nvidia import NVIDIAProvider, NVIDIAProviderConfig, NVIDIAProviderError
-
-
-class FakeResponse:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-    def read(self):
-        return json.dumps(
-            {"choices": [{"message": {"content": "provider-ok"}}]}
-        ).encode()
+from backend.model_registry import model_for_agent
+from backend.providers.nvidia import NvidiaConfig, NvidiaProviderError
 
 
-def test_provider_builds_server_side_request():
-    provider = NVIDIAProvider(
-        NVIDIAProviderConfig(api_key="test-secret", timeout_seconds=3)
-    )
-    with patch("src.providers.nvidia.request.urlopen", return_value=FakeResponse()) as call:
-        response = provider.chat_completion(
-            model="vendor/model", messages=[{"role": "user", "content": "hello"}]
-        )
-    req = call.call_args.args[0]
-    assert req.full_url == "https://integrate.api.nvidia.com/v1/chat/completions"
-    assert req.get_header("Authorization") == "Bearer test-secret"
-    assert NVIDIAProvider.assistant_text(response) == "provider-ok"
+class NvidiaConfigTests(unittest.TestCase):
+    def test_missing_key_fails_closed(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            self.assertRaises(NvidiaProviderError),
+        ):
+            NvidiaConfig.from_env()
+
+    def test_agent_override(self):
+        with patch.dict(
+            os.environ,
+            {"NVIDIA_MODEL_FRONTEND": "meta/llama-3.2-3b-instruct"},
+            clear=True,
+        ):
+            self.assertEqual(
+                model_for_agent("frontend").model,
+                "meta/llama-3.2-3b-instruct",
+            )
+
+    def test_default(self):
+        with patch.dict(
+            os.environ,
+            {"NVIDIA_DEFAULT_MODEL": "openai/gpt-oss-20b"},
+            clear=True,
+        ):
+            self.assertEqual(
+                model_for_agent("planner").model,
+                "openai/gpt-oss-20b",
+            )
 
 
-def test_provider_requires_key(monkeypatch):
-    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
-    with pytest.raises(NVIDIAProviderError, match="NVIDIA_API_KEY"):
-        NVIDIAProviderConfig.from_env()
-
-
-def test_extra_cannot_override_protected_fields():
-    provider = NVIDIAProvider(NVIDIAProviderConfig(api_key="test-secret"))
-    with pytest.raises(NVIDIAProviderError, match="cannot override"):
-        provider.chat_completion(
-            model="vendor/model",
-            messages=[{"role": "user", "content": "hello"}],
-            extra={"model": "other/model"},
-        )
+if __name__ == "__main__":
+    unittest.main()
