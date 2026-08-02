@@ -21,7 +21,7 @@ CREATE TABLE projects (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     owner_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name text NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
-    prompt text NOT NULL,
+    prompt text NOT NULL CHECK (length(prompt) > 0),
     status project_status NOT NULL DEFAULT 'draft',
     current_version integer NOT NULL DEFAULT 0 CHECK (current_version >= 0),
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -49,9 +49,14 @@ CREATE TABLE model_configurations (
     latency_class smallint NOT NULL DEFAULT 3 CHECK (latency_class BETWEEN 1 AND 5),
     cost_class smallint NOT NULL DEFAULT 1 CHECK (cost_class BETWEEN 1 AND 5),
     created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE(owner_id, provider, model_id)
+    updated_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX uq_model_config_owner_provider_model
+    ON model_configurations(owner_id, provider, model_id)
+    WHERE owner_id IS NOT NULL;
+CREATE UNIQUE INDEX uq_model_config_global_provider_model
+    ON model_configurations(provider, model_id)
+    WHERE owner_id IS NULL;
 
 CREATE TABLE tasks (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -90,7 +95,8 @@ CREATE TABLE agent_executions (
     summary text,
     started_at timestamptz,
     completed_at timestamptz,
-    created_at timestamptz NOT NULL DEFAULT now()
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (completed_at IS NULL OR started_at IS NULL OR completed_at >= started_at)
 );
 CREATE INDEX idx_executions_task_created ON agent_executions(task_id, created_at DESC);
 
@@ -108,7 +114,7 @@ CREATE TABLE generated_files (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     version_id uuid REFERENCES project_versions(id) ON DELETE SET NULL,
-    path text NOT NULL,
+    path text NOT NULL CHECK (length(path) > 0),
     content_hash text NOT NULL,
     size_bytes bigint NOT NULL DEFAULT 0 CHECK (size_bytes >= 0),
     operation file_operation NOT NULL,
@@ -128,7 +134,8 @@ CREATE TABLE builds (
     duration_ms bigint CHECK (duration_ms IS NULL OR duration_ms >= 0),
     error_summary text,
     created_at timestamptz NOT NULL DEFAULT now(),
-    completed_at timestamptz
+    completed_at timestamptz,
+    CHECK (completed_at IS NULL OR completed_at >= created_at)
 );
 
 CREATE TABLE test_results (
@@ -166,5 +173,5 @@ CREATE TABLE project_memory (
 );
 CREATE INDEX idx_memory_project_category ON project_memory(project_id, category, created_at);
 
--- Dependency cycles require graph-level validation in the application layer; the
--- relational constraint above prevents only direct self-dependencies.
+-- Dependency cycles and cross-project dependency edges require application-level
+-- validation before persistence. The SQL constraint prevents direct self-dependencies.
