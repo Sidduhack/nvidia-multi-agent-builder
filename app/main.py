@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from app.api.projects import router as projects_router
 from app.core.config import get_settings
 
 app = FastAPI(
@@ -7,6 +8,7 @@ app = FastAPI(
     version="0.1.0",
     description="Free-first orchestration API for a specialized multi-agent software team.",
 )
+app.include_router(projects_router)
 
 
 @app.get("/health")
