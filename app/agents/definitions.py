@@ -32,30 +32,96 @@ class AgentRegistry:
         return list(self._agents.values())
 
 
+def _definition(
+    name: str,
+    description: str,
+    prompt: str,
+    capabilities: set[Capability],
+) -> AgentDefinition:
+    return AgentDefinition(
+        name=name,
+        description=description,
+        system_prompt=prompt,
+        required_capabilities=capabilities,
+    )
+
+
 def default_agent_registry() -> AgentRegistry:
     registry = AgentRegistry()
-    registry.register(
-        AgentDefinition(
-            name="planner",
-            description="Extract requirements and produce an executable development plan.",
-            system_prompt=(
-                "You are the Project Manager. Analyze the project request, separate functional and "
-                "non-functional requirements, identify assumptions and unresolved decisions, and "
-                "produce small dependency-aware tasks. Do not generate application code."
-            ),
-            required_capabilities={Capability.PLANNING, Capability.REASONING},
-        )
-    )
-    registry.register(
-        AgentDefinition(
-            name="architect",
-            description="Define system boundaries, contracts, data architecture, and technical decisions.",
-            system_prompt=(
-                "You are the System Architect. Work from approved requirements. Define architecture, "
-                "folder boundaries, API contracts, database boundaries, security constraints, and "
-                "scalability decisions. Do not silently override approved requirements."
-            ),
-            required_capabilities={Capability.REASONING, Capability.LONG_CONTEXT},
-        )
-    )
+    definitions = [
+        _definition(
+            "planner",
+            "Extract requirements and produce an executable development plan.",
+            "You are the Project Manager. Produce requirements and dependency-aware tasks. Do not generate application code.",
+            {Capability.PLANNING, Capability.REASONING},
+        ),
+        _definition(
+            "architect",
+            "Define system boundaries, contracts, data architecture, and technical decisions.",
+            "You are the System Architect. Define approved architecture and contracts. Never silently override requirements.",
+            {Capability.REASONING, Capability.LONG_CONTEXT},
+        ),
+        _definition(
+            "uiux",
+            "Design information architecture, journeys, states, accessibility, and responsive behavior.",
+            "You are the UI/UX Designer. Produce implementation-ready UX specifications, not decorative filler. Prioritize accessibility and clarity.",
+            {Capability.REASONING},
+        ),
+        _definition(
+            "frontend",
+            "Implement accessible frontend code against approved UI and API contracts.",
+            "You are the Frontend Engineer. Build modular accessible UI. Never invent backend endpoints; report contract conflicts instead.",
+            {Capability.CODING, Capability.REASONING},
+        ),
+        _definition(
+            "backend",
+            "Implement server APIs, business logic, validation, auth, and integrations.",
+            "You are the Backend Engineer. Follow approved API and security contracts. Keep secrets server-side and validate untrusted input.",
+            {Capability.CODING, Capability.REASONING},
+        ),
+        _definition(
+            "database",
+            "Design schemas, constraints, indexes, migrations, policies, and recovery considerations.",
+            "You are the Database Engineer. Design normalized, constrained, migration-friendly data structures and document access policies.",
+            {Capability.REASONING, Capability.CODING},
+        ),
+        _definition(
+            "security",
+            "Review generated systems for application and agent-execution security risks.",
+            "You are the Security Engineer. Review defensively for auth, injection, secret exposure, access control, unsafe execution, and dependency risks. Return actionable findings.",
+            {Capability.SECURITY, Capability.REASONING},
+        ),
+        _definition(
+            "reviewer",
+            "Review code for correctness, maintainability, contracts, and architecture violations.",
+            "You are the Code Reviewer. Prefer small actionable findings over unnecessary rewrites. Verify imports, paths, contracts, duplication, and correctness.",
+            {Capability.CODING, Capability.REASONING},
+        ),
+        _definition(
+            "testing",
+            "Design unit, integration, and end-to-end tests for important user journeys.",
+            "You are the Testing Engineer. Create meaningful tests from approved requirements and contracts. Never claim a test passed unless execution evidence says so.",
+            {Capability.CODING, Capability.REASONING},
+        ),
+        _definition(
+            "debugging",
+            "Diagnose build and test failures and propose minimal reliable repairs.",
+            "You are the Debugging Engineer. Read complete errors, find root causes, change only affected code, and require retesting after repairs.",
+            {Capability.DEBUGGING, Capability.CODING, Capability.REASONING},
+        ),
+        _definition(
+            "performance",
+            "Identify meaningful frontend, API, database, caching, and resource improvements.",
+            "You are the Performance Engineer. Optimize only where evidence indicates meaningful benefit; avoid speculative complexity.",
+            {Capability.REASONING, Capability.CODING},
+        ),
+        _definition(
+            "integrator",
+            "Verify the complete generated project and resolve cross-agent integration conflicts.",
+            "You are the Final Integration Engineer. Verify structure, dependencies, imports, contracts, configuration, and build readiness. Never hide unresolved failures.",
+            {Capability.REASONING, Capability.CODING, Capability.LONG_CONTEXT},
+        ),
+    ]
+    for definition in definitions:
+        registry.register(definition)
     return registry
