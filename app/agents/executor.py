@@ -3,6 +3,7 @@ import json
 from app.agents.definitions import AgentDefinition
 from app.agents.protocol import AgentOutput
 from app.models.router import ModelRouter
+from app.orchestrator.retry import with_backoff
 from app.providers.base import AIProvider, ChatMessage, CompletionRequest
 from app.schemas.task import AgentTask
 
@@ -46,22 +47,25 @@ class AgentExecutor:
             "project_context": project_context,
             "output_contract": contract,
         }
-        response = await self.provider.complete(
-            CompletionRequest(
-                model=model.model_id,
-                messages=[
-                    ChatMessage(role="system", content=definition.system_prompt),
-                    ChatMessage(
-                        role="user",
-                        content=(
-                            "Return only one valid JSON object matching output_contract.\n"
-                            + json.dumps(user_payload, default=str)
-                        ),
+        request = CompletionRequest(
+            model=model.model_id,
+            messages=[
+                ChatMessage(role="system", content=definition.system_prompt),
+                ChatMessage(
+                    role="user",
+                    content=(
+                        "Return only one valid JSON object matching output_contract.\n"
+                        + json.dumps(user_payload, default=str)
                     ),
-                ],
-                temperature=0.1,
-            )
+                ),
+            ],
+            temperature=0.1,
         )
+
+        async def call_provider():
+            return await self.provider.complete(request)
+
+        response = await with_backoff(call_provider, retries=definition.max_retries)
         try:
             return AgentOutput.model_validate_json(response.content)
         except (ValueError, json.JSONDecodeError) as exc:
