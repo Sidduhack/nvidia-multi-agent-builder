@@ -4,7 +4,6 @@ from app.agents.definitions import default_agent_registry
 from app.memory.project import ProjectMemory
 from app.orchestrator.context import ContextBuilder
 
-
 EXPECTED_AGENTS = {
     "planner",
     "architect",
