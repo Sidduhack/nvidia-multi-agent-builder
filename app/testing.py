@@ -76,7 +76,7 @@ class TestRunner:
         except TimeoutError:
             exit_code, stdout, stderr = None, "", "Test execution timed out"
             status = TestStatus.TIMED_OUT
-        except Exception as exc:  # executor boundary: sanitize into a test result
+        except Exception as exc:  # noqa: BLE001 -- executor is a trust boundary
             exit_code, stdout = None, ""
             stderr = f"Executor error: {type(exc).__name__}"
             status = TestStatus.ERROR
