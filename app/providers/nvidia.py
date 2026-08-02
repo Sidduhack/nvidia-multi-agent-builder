@@ -53,27 +53,29 @@ class NvidiaProvider(AIProvider):
         )
 
     async def stream(self, request: CompletionRequest) -> AsyncIterator[str]:
-        async with httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client:
-            async with client.stream(
+        async with (
+            httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client,
+            client.stream(
                 "POST",
                 f"{self.settings.nvidia_base_url.rstrip('/')}/chat/completions",
                 headers=self._headers(),
                 json=self._payload(request, stream=True),
-            ) as response:
-                if response.is_error:
-                    raise NvidiaProviderError(
-                        f"NVIDIA streaming request failed with HTTP {response.status_code}"
-                    )
-                async for line in response.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    event = line[6:]
-                    if event == "[DONE]":
-                        break
-                    data = json.loads(event)
-                    delta = data.get("choices", [{}])[0].get("delta", {}).get("content")
-                    if delta:
-                        yield delta
+            ) as response,
+        ):
+            if response.is_error:
+                raise NvidiaProviderError(
+                    f"NVIDIA streaming request failed with HTTP {response.status_code}"
+                )
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                event = line[6:]
+                if event == "[DONE]":
+                    break
+                data = json.loads(event)
+                delta = data.get("choices", [{}])[0].get("delta", {}).get("content")
+                if delta:
+                    yield delta
 
     async def list_models(self) -> list[str]:
         async with httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client:
