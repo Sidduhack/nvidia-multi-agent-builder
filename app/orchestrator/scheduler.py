@@ -4,6 +4,7 @@ from app.agents.definitions import AgentRegistry
 from app.agents.executor import AgentExecutor
 from app.events.bus import EventBus, ProjectEvent
 from app.memory.project import ProjectMemory
+from app.orchestrator.context import ContextBuilder
 from app.orchestrator.graph import TaskGraph
 from app.schemas.task import AgentTask, TaskStatus
 
@@ -22,6 +23,7 @@ class Scheduler:
         self.agents = agents
         self.executor = executor
         self.memory = memory
+        self.context_builder = ContextBuilder(memory)
         self.events = events
         self.semaphore = asyncio.Semaphore(max_parallel)
 
@@ -34,23 +36,40 @@ class Scheduler:
         async with self.semaphore:
             task.status = TaskStatus.RUNNING
             await self.events.publish(
-                ProjectEvent(project_id=task.project_id, type="AGENT_STARTED", payload={"task_id": str(task.id), "agent": task.agent})
+                ProjectEvent(
+                    project_id=task.project_id,
+                    type="AGENT_STARTED",
+                    payload={"task_id": str(task.id), "agent": task.agent},
+                )
             )
             try:
                 definition = self.agents.get(task.agent)
-                context = self.memory.context(
-                    task.project_id,
-                    ["requirements", "architecture", "api_contracts", "database_schema", "decisions"],
-                )
+                context = self.context_builder.build(task.project_id, task.agent)
                 result = await self.executor.execute(definition, task, context)
                 self.memory.append(task.project_id, f"agent:{task.agent}", result.model_dump())
                 self.memory.append(task.project_id, "decisions", result.decisions)
                 task.status = TaskStatus.COMPLETED
                 await self.events.publish(
-                    ProjectEvent(project_id=task.project_id, type="TASK_COMPLETED", payload={"task_id": str(task.id), "agent": task.agent, "summary": result.summary})
+                    ProjectEvent(
+                        project_id=task.project_id,
+                        type="TASK_COMPLETED",
+                        payload={
+                            "task_id": str(task.id),
+                            "agent": task.agent,
+                            "summary": result.summary,
+                        },
+                    )
                 )
             except Exception as exc:
                 task.status = TaskStatus.FAILED
                 await self.events.publish(
-                    ProjectEvent(project_id=task.project_id, type="TASK_FAILED", payload={"task_id": str(task.id), "agent": task.agent, "error_type": type(exc).__name__})
+                    ProjectEvent(
+                        project_id=task.project_id,
+                        type="TASK_FAILED",
+                        payload={
+                            "task_id": str(task.id),
+                            "agent": task.agent,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
                 )
