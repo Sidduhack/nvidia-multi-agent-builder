@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 SCHEMA = Path("database/schema.sql").read_text()
 
 
