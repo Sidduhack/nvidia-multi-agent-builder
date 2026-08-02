@@ -10,7 +10,6 @@ from app.orchestrator.graph import TaskGraph
 from app.orchestrator.retry import RetryExhaustedError
 from app.schemas.task import AgentTask, TaskStatus
 
-
 SCHEDULER_FAILURES = (
     AgentExecutionError,
     KeyError,
