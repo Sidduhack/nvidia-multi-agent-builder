@@ -2,7 +2,6 @@ from uuid import UUID
 
 from app.memory.project import ProjectMemory
 
-
 ROLE_CONTEXT: dict[str, list[str]] = {
     "planner": ["requirements", "decisions"],
     "architect": ["requirements", "decisions", "constraints"],

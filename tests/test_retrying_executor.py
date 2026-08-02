@@ -1,5 +1,6 @@
-import pytest
 from uuid import uuid4
+
+import pytest
 
 from app.agents.definitions import AgentDefinition
 from app.agents.executor import AgentExecutor

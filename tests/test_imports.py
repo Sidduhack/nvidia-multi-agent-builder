@@ -1,8 +1,15 @@
+import importlib
+
+
 def test_core_packages_import() -> None:
-    import app.agents.definitions  # noqa: F401
-    import app.agents.executor  # noqa: F401
-    import app.events.bus  # noqa: F401
-    import app.memory.project  # noqa: F401
-    import app.models.discovery  # noqa: F401
-    import app.orchestrator.bootstrap  # noqa: F401
-    import app.orchestrator.scheduler  # noqa: F401
+    modules = [
+        "app.agents.definitions",
+        "app.agents.executor",
+        "app.events.bus",
+        "app.memory.project",
+        "app.models.discovery",
+        "app.orchestrator.bootstrap",
+        "app.orchestrator.scheduler",
+    ]
+    for module in modules:
+        assert importlib.import_module(module) is not None

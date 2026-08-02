@@ -14,13 +14,14 @@ async def with_backoff(
     *,
     retries: int,
     base_delay_seconds: float = 0.25,
+    retryable: tuple[type[Exception], ...] = (RuntimeError,),
 ) -> T:
-    """Retry transient operations with bounded exponential backoff."""
+    """Retry explicitly retryable transient operations with bounded backoff."""
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         try:
             return await operation()
-        except Exception as exc:
+        except retryable as exc:
             last_error = exc
             if attempt >= retries:
                 break

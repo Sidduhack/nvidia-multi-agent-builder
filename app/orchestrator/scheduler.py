@@ -1,12 +1,21 @@
 import asyncio
 
 from app.agents.definitions import AgentRegistry
-from app.agents.executor import AgentExecutor
+from app.agents.executor import AgentExecutionError, AgentExecutor
 from app.events.bus import EventBus, ProjectEvent
 from app.memory.project import ProjectMemory
+from app.models.router import NoCompatibleModelError
 from app.orchestrator.context import ContextBuilder
 from app.orchestrator.graph import TaskGraph
+from app.orchestrator.retry import RetryExhaustedError
 from app.schemas.task import AgentTask, TaskStatus
+
+SCHEDULER_FAILURES = (
+    AgentExecutionError,
+    KeyError,
+    NoCompatibleModelError,
+    RetryExhaustedError,
+)
 
 
 class Scheduler:
@@ -60,7 +69,7 @@ class Scheduler:
                         },
                     )
                 )
-            except Exception as exc:
+            except SCHEDULER_FAILURES as exc:
                 task.status = TaskStatus.FAILED
                 await self.events.publish(
                     ProjectEvent(
