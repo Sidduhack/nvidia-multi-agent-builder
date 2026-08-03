@@ -88,7 +88,7 @@ class MultiAgentOrchestrator:
         logger.info("agent.start id=%s model=%s", agent_id, model)
         try:
             result = await self._runner.execute(agent_id, task, model=model)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- agent failures are recorded, not suppressed
             elapsed = time.monotonic() - started
             logger.error(
                 "agent.failed id=%s model=%s elapsed=%.1fs error=%s",
