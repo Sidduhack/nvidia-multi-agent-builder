@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import OrderedDict
+from collections.abc import Awaitable, Callable, Hashable
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Generic, Hashable, TypeVar
+from typing import Generic, TypeVar
 
 T = TypeVar("T")
 K = TypeVar("K", bound=Hashable)
