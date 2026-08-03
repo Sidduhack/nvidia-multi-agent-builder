@@ -1,60 +1,77 @@
+import asyncio
+
 import pytest
 
-from src.orchestrator import OrchestrationError, Orchestrator, Task, TaskStatus
+from app.execution import AgentExecutionResult
+from app.orchestrator import SPECIALIST_AGENTS, MultiAgentOrchestrator
 
 
-def test_dependencies_gate_tasks():
-    planner = Task("plan", "planner", "Plan")
-    frontend = Task("front", "frontend", "Build UI", dependencies=["plan"])
-    orchestrator = Orchestrator([planner, frontend])
-    assert [t.task_id for t in orchestrator.ready_tasks()] == ["plan"]
-    orchestrator.mark_running("plan")
-    orchestrator.mark_completed("plan")
-    assert [t.task_id for t in orchestrator.ready_tasks()] == ["front"]
+class FakeSettings:
+    def model_for_agent(self, agent_id: str) -> str:
+        return f"test/{agent_id}"
 
 
-def test_cycle_is_rejected():
-    with pytest.raises(OrchestrationError, match="cycle"):
-        Orchestrator([
-            Task("a", "planner", "A", dependencies=["b"]),
-            Task("b", "architect", "B", dependencies=["a"]),
-        ])
+class RecordingRunner:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None]] = []
+        self.active = 0
+        self.peak_active = 0
+        self.specialists_finished = 0
+        self.reviewer_saw_all_specialists = False
+
+    async def execute(self, agent_id: str, task: str, *, model: str | None = None) -> AgentExecutionResult:
+        self.calls.append((agent_id, model))
+        if agent_id == "reviewer":
+            self.reviewer_saw_all_specialists = self.specialists_finished == len(SPECIALIST_AGENTS)
+            return AgentExecutionResult(agent_id=agent_id, model=model or "test/reviewer", content="final integration review", usage={})
+
+        self.active += 1
+        self.peak_active = max(self.peak_active, self.active)
+        await asyncio.sleep(0.01)
+        self.active -= 1
+        self.specialists_finished += 1
+        return AgentExecutionResult(agent_id=agent_id, model=model or f"test/{agent_id}", content=f"{agent_id} contribution", usage={})
 
 
-def test_unknown_dependency_is_rejected():
-    with pytest.raises(OrchestrationError, match="unknown dependencies"):
-        Orchestrator([Task("a", "planner", "A", dependencies=["missing"])])
+@pytest.mark.asyncio
+async def test_orchestrator_runs_all_specialists_then_reviewer() -> None:
+    runner = RecordingRunner()
+    orchestrator = MultiAgentOrchestrator(runner, FakeSettings(), max_parallel_agents=3)
+    result = await orchestrator.execute("Build a calculator application", "Planner says build it safely")
+
+    assert tuple(item.agent_id for item in result.specialist_results) == SPECIALIST_AGENTS
+    assert result.review.agent_id == "reviewer"
+    assert runner.reviewer_saw_all_specialists is True
+    assert runner.calls[-1][0] == "reviewer"
 
 
-def test_runner_failure_is_preserved():
-    task = Task("backend", "backend", "Build API")
-    orchestrator = Orchestrator([task])
-
-    def fail(_task):
-        raise RuntimeError("boom")
-
-    assert orchestrator.run_ready(fail) == []
-    assert task.status == TaskStatus.FAILED
-    assert task.error == "boom"
+@pytest.mark.asyncio
+async def test_orchestrator_respects_parallel_limit() -> None:
+    runner = RecordingRunner()
+    orchestrator = MultiAgentOrchestrator(runner, FakeSettings(), max_parallel_agents=2)
+    await orchestrator.execute("Build a calculator application", "Planner says build it safely")
+    assert runner.peak_active == 2
 
 
-def test_repair_limit_prevents_infinite_loop():
-    task = Task("debug", "debugging", "Repair")
-    orchestrator = Orchestrator([task], max_repair_cycles=1)
-    orchestrator.mark_running("debug")
-    orchestrator.mark_failed("debug", "first")
-    orchestrator.request_repair("debug")
-    orchestrator.mark_failed("debug", "again")
-    # A repair attempt becomes attempt #2 only when scheduled by a future repair runner.
-    task.attempts = 2
-    with pytest.raises(OrchestrationError, match="Repair limit"):
-        orchestrator.request_repair("debug")
+@pytest.mark.asyncio
+async def test_orchestrator_routes_each_agent_to_its_model() -> None:
+    runner = RecordingRunner()
+    orchestrator = MultiAgentOrchestrator(runner, FakeSettings(), max_parallel_agents=4)
+    await orchestrator.execute("Build a calculator application", "Planner says build it safely")
+
+    assert runner.calls == [
+        *((agent_id, f"test/{agent_id}") for agent_id in SPECIALIST_AGENTS),
+        ("reviewer", "test/reviewer"),
+    ]
 
 
-def test_independent_tasks_are_ready_together():
-    orchestrator = Orchestrator([
-        Task("ui", "ui_ux", "Design"),
-        Task("db", "database", "Schema"),
-        Task("api", "backend", "API", dependencies=["db"]),
-    ])
-    assert {t.task_id for t in orchestrator.ready_tasks()} == {"ui", "db"}
+@pytest.mark.asyncio
+async def test_orchestrator_rejects_empty_inputs() -> None:
+    runner = RecordingRunner()
+    orchestrator = MultiAgentOrchestrator(runner, FakeSettings())
+
+    with pytest.raises(ValueError, match="project_prompt"):
+        await orchestrator.execute(" ", "valid planner output")
+    with pytest.raises(ValueError, match="planner_output"):
+        await orchestrator.execute("valid project prompt", " ")
+    assert runner.calls == []
