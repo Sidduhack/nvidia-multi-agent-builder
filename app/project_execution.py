@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
-from app.api.projects import Project, ProjectStatus, ProjectStore
 from app.execution import AgentExecutionResult
+from app.project_store import Project, ProjectStatus, ProjectStore
 
 
 class AgentRunner(Protocol):
