@@ -1,8 +1,9 @@
 import pytest
 
-from app.api.projects import ProjectCreate, ProjectStatus, ProjectStore
 from app.execution import AgentExecutionResult
+from app.orchestrator import SPECIALIST_AGENTS
 from app.project_execution import ProjectExecutionService
+from app.project_store import ProjectCreate, ProjectStatus, ProjectStore
 
 
 class FakeRunner:
@@ -23,7 +24,7 @@ class FakeRunner:
         return AgentExecutionResult(
             agent_id=agent_id,
             model=model or "test/default",
-            content="planner output",
+            content=f"{agent_id} output",
             usage={},
         )
 
@@ -34,7 +35,7 @@ class FakeModels:
 
 
 @pytest.mark.asyncio
-async def test_start_runs_planner_and_advances_project() -> None:
+async def test_start_runs_full_orchestration_and_completes_project() -> None:
     store = ProjectStore()
     project = store.create(
         ProjectCreate(
@@ -48,10 +49,13 @@ async def test_start_runs_planner_and_advances_project() -> None:
     result = await service.start(project.id)
 
     assert result.planner_output == "planner output"
-    assert store.get(project.id).status is ProjectStatus.RUNNING  # type: ignore[union-attr]
+    assert store.get(project.id).status is ProjectStatus.COMPLETED  # type: ignore[union-attr]
     assert runner.calls[0][0] == "planner"
     assert runner.calls[0][2] == "test/planner"
     assert "Demo project" in runner.calls[0][1]
+    assert tuple(item.agent_id for item in result.orchestration.specialist_results) == SPECIALIST_AGENTS
+    assert result.orchestration.review.agent_id == "reviewer"
+    assert [call[0] for call in runner.calls] == ["planner", *SPECIALIST_AGENTS, "reviewer"]
 
 
 @pytest.mark.asyncio
@@ -72,7 +76,7 @@ async def test_start_marks_project_failed_when_planner_fails() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_rejects_duplicate_execution() -> None:
+async def test_start_rejects_duplicate_execution_without_extra_agent_calls() -> None:
     store = ProjectStore()
     project = store.create(
         ProjectCreate(
@@ -84,8 +88,10 @@ async def test_start_rejects_duplicate_execution() -> None:
     service = ProjectExecutionService(store, runner, FakeModels())
 
     await service.start(project.id)
+    first_run_call_count = len(runner.calls)
+    assert first_run_call_count == 1 + len(SPECIALIST_AGENTS) + 1
 
     with pytest.raises(ValueError, match="cannot start"):
         await service.start(project.id)
 
-    assert len(runner.calls) == 1
+    assert len(runner.calls) == first_run_call_count

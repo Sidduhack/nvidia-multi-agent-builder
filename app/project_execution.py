@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
-from app.api.projects import Project, ProjectStatus, ProjectStore
 from app.execution import AgentExecutionResult
+from app.orchestrator import MultiAgentOrchestrator, OrchestrationResult
+from app.project_store import Project, ProjectStatus, ProjectStore
 
 
 class AgentRunner(Protocol):
@@ -26,6 +27,7 @@ class ModelResolver(Protocol):
 class ProjectExecutionResult:
     project_id: UUID
     planner_output: str
+    orchestration: OrchestrationResult
 
 
 class ProjectExecutionService:
@@ -36,10 +38,17 @@ class ProjectExecutionService:
         store: ProjectStore,
         runner: AgentRunner,
         model_resolver: ModelResolver,
+        *,
+        max_parallel_agents: int = 2,
     ) -> None:
         self._store = store
         self._runner = runner
         self._model_resolver = model_resolver
+        self._orchestrator = MultiAgentOrchestrator(
+            runner,
+            model_resolver,
+            max_parallel_agents=max_parallel_agents,
+        )
 
     async def start(self, project_id: UUID) -> ProjectExecutionResult:
         project = self._require_project(project_id)
@@ -53,12 +62,18 @@ class ProjectExecutionService:
                 self._planner_task(project),
                 model=self._model_resolver.model_for_agent("planner"),
             )
+            self._store.set_status(project_id, ProjectStatus.RUNNING)
+            orchestration = await self._orchestrator.execute(project.prompt, planner.content)
         except Exception:
             self._store.set_status(project_id, ProjectStatus.FAILED)
             raise
 
-        self._store.set_status(project_id, ProjectStatus.RUNNING)
-        return ProjectExecutionResult(project_id=project_id, planner_output=planner.content)
+        self._store.set_status(project_id, ProjectStatus.COMPLETED)
+        return ProjectExecutionResult(
+            project_id=project_id,
+            planner_output=planner.content,
+            orchestration=orchestration,
+        )
 
     def _require_project(self, project_id: UUID) -> Project:
         project = self._store.get(project_id)
