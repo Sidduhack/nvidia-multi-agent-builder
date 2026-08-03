@@ -70,6 +70,17 @@ class ProjectStore:
         with self._lock:
             return sorted(self._projects.values(), key=lambda item: item.created_at, reverse=True)
 
+    def set_status(self, project_id: UUID, project_status: ProjectStatus) -> Project:
+        with self._lock:
+            project = self._projects.get(project_id)
+            if project is None:
+                raise KeyError(f"project not found: {project_id}")
+            updated = project.model_copy(
+                update={"status": project_status, "updated_at": datetime.now(UTC)}
+            )
+            self._projects[project_id] = updated
+            return updated
+
 
 store = ProjectStore()
 
