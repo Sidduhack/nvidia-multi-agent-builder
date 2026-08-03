@@ -1,8 +1,8 @@
 import pytest
 
-from app.api.projects import ProjectCreate, ProjectStatus, ProjectStore
 from app.execution import AgentExecutionResult
 from app.project_execution import ProjectExecutionService
+from app.project_store import ProjectCreate, ProjectStatus, ProjectStore
 
 
 class FakeRunner:
