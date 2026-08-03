@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
@@ -36,38 +37,91 @@ class NvidiaProvider(AIProvider):
             payload["max_tokens"] = request.max_tokens
         return payload
 
-    async def complete(self, request: CompletionRequest) -> CompletionResponse:
-        try:
-            async with httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client:
-                response = await client.post(
-                    f"{self.settings.nvidia_base_url.rstrip('/')}/chat/completions",
-                    headers=self._headers(),
-                    json=self._payload(request, stream=False),
-                )
-        except httpx.TimeoutException as exc:
-            raise NvidiaProviderError(
-                f"NVIDIA request timed out after {self.settings.request_timeout_seconds:g} seconds"
-            ) from exc
-        except httpx.RequestError as exc:
-            raise NvidiaProviderError(f"NVIDIA transport error: {type(exc).__name__}") from exc
+    @staticmethod
+    def _retryable_status(status_code: int) -> bool:
+        return status_code == 429 or status_code >= 500
 
-        if response.is_error:
-            raise NvidiaProviderError(f"NVIDIA request failed with HTTP {response.status_code}")
-
+    @staticmethod
+    def _error_detail(response: httpx.Response) -> str:
         try:
             data = response.json()
-            choice = data["choices"][0]
-            content = choice["message"]["content"]
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
-            raise NvidiaProviderError("NVIDIA returned an invalid completion response") from exc
+            detail = data.get("detail") or data.get("message") or data.get("error")
+            if isinstance(detail, dict):
+                detail = detail.get("message") or str(detail)
+            if detail:
+                return str(detail)[:300]
+        except (ValueError, TypeError):
+            pass
+        return response.text.strip()[:300] or "no response detail"
 
-        if not isinstance(content, str):
-            raise NvidiaProviderError("NVIDIA completion response did not contain text content")
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        attempts = self.settings.max_agent_retries + 1
+        last_error: Exception | None = None
 
-        return CompletionResponse(
-            model=data.get("model", request.model),
-            content=content,
-            usage=data.get("usage", {}),
+        for attempt in range(1, attempts + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client:
+                    response = await client.post(
+                        f"{self.settings.nvidia_base_url.rstrip('/')}/chat/completions",
+                        headers=self._headers(),
+                        json=self._payload(request, stream=False),
+                    )
+            except httpx.TimeoutException as exc:
+                last_error = exc
+                if attempt < attempts:
+                    await asyncio.sleep(min(2 ** (attempt - 1), 8))
+                    continue
+                raise NvidiaProviderError(
+                    f"NVIDIA model {request.model} timed out after "
+                    f"{self.settings.request_timeout_seconds:g}s on attempt {attempt}/{attempts}"
+                ) from exc
+            except httpx.RequestError as exc:
+                last_error = exc
+                if attempt < attempts:
+                    await asyncio.sleep(min(2 ** (attempt - 1), 8))
+                    continue
+                raise NvidiaProviderError(
+                    f"NVIDIA model {request.model} transport error after {attempt}/{attempts} attempts: "
+                    f"{type(exc).__name__}"
+                ) from exc
+
+            if response.is_error:
+                detail = self._error_detail(response)
+                if self._retryable_status(response.status_code) and attempt < attempts:
+                    retry_after = response.headers.get("retry-after")
+                    try:
+                        delay = min(float(retry_after), 30) if retry_after else min(2 ** (attempt - 1), 8)
+                    except ValueError:
+                        delay = min(2 ** (attempt - 1), 8)
+                    await asyncio.sleep(delay)
+                    continue
+                raise NvidiaProviderError(
+                    f"NVIDIA model {request.model} failed with HTTP {response.status_code} "
+                    f"on attempt {attempt}/{attempts}: {detail}"
+                )
+
+            try:
+                data = response.json()
+                choice = data["choices"][0]
+                content = choice["message"]["content"]
+            except (ValueError, KeyError, IndexError, TypeError) as exc:
+                raise NvidiaProviderError(
+                    f"NVIDIA model {request.model} returned an invalid completion response"
+                ) from exc
+
+            if not isinstance(content, str):
+                raise NvidiaProviderError(
+                    f"NVIDIA model {request.model} completion response did not contain text content"
+                )
+
+            return CompletionResponse(
+                model=data.get("model", request.model),
+                content=content,
+                usage=data.get("usage", {}),
+            )
+
+        raise NvidiaProviderError(
+            f"NVIDIA model {request.model} request failed after {attempts} attempts: {last_error}"
         )
 
     async def stream(self, request: CompletionRequest) -> AsyncIterator[str]:
@@ -83,7 +137,8 @@ class NvidiaProvider(AIProvider):
             ):
                 if response.is_error:
                     raise NvidiaProviderError(
-                        f"NVIDIA streaming request failed with HTTP {response.status_code}"
+                        f"NVIDIA streaming request failed with HTTP {response.status_code}: "
+                        f"{self._error_detail(response)}"
                     )
                 async for line in response.aiter_lines():
                     if not line.startswith("data: "):
@@ -97,10 +152,13 @@ class NvidiaProvider(AIProvider):
                         yield delta
         except httpx.TimeoutException as exc:
             raise NvidiaProviderError(
-                f"NVIDIA streaming request timed out after {self.settings.request_timeout_seconds:g} seconds"
+                f"NVIDIA model {request.model} streaming request timed out after "
+                f"{self.settings.request_timeout_seconds:g} seconds"
             ) from exc
         except httpx.RequestError as exc:
-            raise NvidiaProviderError(f"NVIDIA streaming transport error: {type(exc).__name__}") from exc
+            raise NvidiaProviderError(
+                f"NVIDIA model {request.model} streaming transport error: {type(exc).__name__}"
+            ) from exc
 
     async def list_models(self) -> list[str]:
         try:
@@ -117,5 +175,7 @@ class NvidiaProvider(AIProvider):
             raise NvidiaProviderError(f"NVIDIA model discovery transport error: {type(exc).__name__}") from exc
 
         if response.is_error:
-            raise NvidiaProviderError(f"NVIDIA model discovery failed with HTTP {response.status_code}")
+            raise NvidiaProviderError(
+                f"NVIDIA model discovery failed with HTTP {response.status_code}: {self._error_detail(response)}"
+            )
         return [item["id"] for item in response.json().get("data", []) if "id" in item]
