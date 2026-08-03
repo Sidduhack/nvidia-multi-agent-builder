@@ -16,10 +16,18 @@ from app.providers.nvidia import NvidiaProvider, NvidiaProviderError
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
 
 
+class AgentOutput(BaseModel):
+    agent_id: str
+    model: str
+    content: str
+
+
 class ProjectStartResponse(BaseModel):
     project_id: UUID
     status: ProjectStatus
     planner_output: str
+    specialists: list[AgentOutput]
+    review: AgentOutput
 
 
 @lru_cache
@@ -34,7 +42,12 @@ def get_project_execution_service() -> ProjectExecutionService:
         default_model=settings.nvidia_default_model,
         performance=performance,
     )
-    return ProjectExecutionService(store, runner, settings)
+    return ProjectExecutionService(
+        store,
+        runner,
+        settings,
+        max_parallel_agents=settings.max_parallel_agents,
+    )
 
 
 @router.post("", response_model=Project, status_code=status.HTTP_201_CREATED)
@@ -62,10 +75,20 @@ async def start_project(project_id: UUID) -> ProjectStartResponse:
     project = store.get(project_id)
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
     return ProjectStartResponse(
         project_id=result.project_id,
         status=project.status,
         planner_output=result.planner_output,
+        specialists=[
+            AgentOutput(agent_id=item.agent_id, model=item.model, content=item.content)
+            for item in result.orchestration.specialist_results
+        ],
+        review=AgentOutput(
+            agent_id=result.orchestration.review.agent_id,
+            model=result.orchestration.review.model,
+            content=result.orchestration.review.content,
+        ),
     )
 
 
