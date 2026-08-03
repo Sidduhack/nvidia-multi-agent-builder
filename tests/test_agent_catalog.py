@@ -1,6 +1,6 @@
-from app.agent_catalog import AGENT_CATALOG, get_agent, list_agents
-
 import pytest
+
+from app.agent_catalog import AGENT_CATALOG, get_agent, list_agents
 
 EXPECTED_AGENT_IDS = {
     "planner",
