@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
 from app.execution import AgentExecutionResult
+
+logger = logging.getLogger(__name__)
 
 
 class AgentRunner(Protocol):
@@ -37,9 +41,29 @@ SPECIALIST_AGENTS = (
 
 
 @dataclass(frozen=True, slots=True)
+class AgentRunRecord:
+    agent_id: str
+    model: str
+    elapsed_seconds: float
+    result: AgentExecutionResult | None = None
+    error: str | None = None
+
+
+class OrchestrationError(RuntimeError):
+    def __init__(self, failed: AgentRunRecord, completed: tuple[AgentRunRecord, ...]) -> None:
+        self.failed = failed
+        self.completed = completed
+        super().__init__(
+            f"agent {failed.agent_id} using {failed.model} failed after "
+            f"{failed.elapsed_seconds:.1f}s: {failed.error}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class OrchestrationResult:
     specialist_results: tuple[AgentExecutionResult, ...]
     review: AgentExecutionResult
+    runs: tuple[AgentRunRecord, ...] = ()
 
 
 class MultiAgentOrchestrator:
@@ -58,29 +82,72 @@ class MultiAgentOrchestrator:
         self._model_resolver = model_resolver
         self._semaphore = asyncio.Semaphore(max_parallel_agents)
 
+    async def _run_agent(self, agent_id: str, task: str) -> AgentRunRecord:
+        model = self._model_resolver.model_for_agent(agent_id)
+        started = time.monotonic()
+        logger.info("agent.start id=%s model=%s", agent_id, model)
+        try:
+            result = await self._runner.execute(agent_id, task, model=model)
+        except Exception as exc:
+            elapsed = time.monotonic() - started
+            logger.error(
+                "agent.failed id=%s model=%s elapsed=%.1fs error=%s",
+                agent_id,
+                model,
+                elapsed,
+                exc,
+            )
+            return AgentRunRecord(
+                agent_id=agent_id,
+                model=model,
+                elapsed_seconds=elapsed,
+                error=str(exc),
+            )
+        elapsed = time.monotonic() - started
+        logger.info("agent.completed id=%s model=%s elapsed=%.1fs", agent_id, model, elapsed)
+        return AgentRunRecord(
+            agent_id=agent_id,
+            model=model,
+            elapsed_seconds=elapsed,
+            result=result,
+        )
+
     async def execute(self, project_prompt: str, planner_output: str) -> OrchestrationResult:
         if not project_prompt.strip():
             raise ValueError("project_prompt must not be empty")
         if not planner_output.strip():
             raise ValueError("planner_output must not be empty")
 
-        async def run_specialist(agent_id: str) -> AgentExecutionResult:
+        async def run_specialist(agent_id: str) -> AgentRunRecord:
             async with self._semaphore:
-                return await self._runner.execute(
+                return await self._run_agent(
                     agent_id,
                     self._specialist_task(agent_id, project_prompt, planner_output),
-                    model=self._model_resolver.model_for_agent(agent_id),
                 )
 
-        specialist_results = tuple(
+        records = tuple(
             await asyncio.gather(*(run_specialist(agent_id) for agent_id in SPECIALIST_AGENTS))
         )
-        review = await self._runner.execute(
+        completed = tuple(record for record in records if record.result is not None)
+        failed = next((record for record in records if record.error is not None), None)
+        if failed is not None:
+            raise OrchestrationError(failed, completed)
+
+        specialist_results = tuple(
+            record.result for record in records if record.result is not None
+        )
+        review_record = await self._run_agent(
             "reviewer",
             self._review_task(project_prompt, planner_output, specialist_results),
-            model=self._model_resolver.model_for_agent("reviewer"),
         )
-        return OrchestrationResult(specialist_results=specialist_results, review=review)
+        if review_record.result is None:
+            raise OrchestrationError(review_record, completed)
+
+        return OrchestrationResult(
+            specialist_results=specialist_results,
+            review=review_record.result,
+            runs=(*records, review_record),
+        )
 
     @staticmethod
     def _specialist_task(agent_id: str, project_prompt: str, planner_output: str) -> str:
@@ -89,7 +156,7 @@ class MultiAgentOrchestrator:
             f"Planner output:\n{planner_output}\n\n"
             f"Act as the {agent_id} specialist. Produce your concrete contribution for this project. "
             "Stay within your specialty, identify assumptions, and provide implementation-ready output. "
-            "Do not claim files, tests, commands, deployments, or external actions were performed."
+            "Keep the response concise. Do not claim files, tests, commands, deployments, or external actions were performed."
         )
 
     @staticmethod
@@ -106,6 +173,6 @@ class MultiAgentOrchestrator:
             f"Planner output:\n{planner_output}\n\n"
             f"Specialist outputs:\n{sections}\n\n"
             "Review the combined specialist work for contradictions, missing requirements, unsafe choices, "
-            "integration problems, and implementation gaps. Produce a prioritized final integration brief. "
+            "integration problems, and implementation gaps. Produce a concise prioritized final integration brief. "
             "Do not claim implementation or verification occurred unless the supplied outputs prove it."
         )
