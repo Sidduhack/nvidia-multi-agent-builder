@@ -111,6 +111,46 @@ def test_expired_cooldown_candidate_can_reenter_routing() -> None:
     assert ordered_after_cooldown == ("fallback", "primary")
 
 
+def test_candidate_order_prefers_faster_measured_healthy_model() -> None:
+    registry = ModelHealthRegistry()
+    registry.record_success("slow", 8.0, now=NOW)
+    registry.record_success("fast", 1.5, now=NOW)
+
+    ordered = registry.order_candidates(("slow", "fast"), now=NOW)
+
+    assert ordered == ("fast", "slow")
+
+
+def test_health_state_has_priority_over_latency() -> None:
+    registry = ModelHealthRegistry(failure_threshold=2)
+    registry.record_success("healthy-slow", 8.0, now=NOW)
+    registry.record_success("degraded-fast", 0.5, now=NOW)
+    registry.record_failure("degraded-fast", now=NOW)
+
+    ordered = registry.order_candidates(("degraded-fast", "healthy-slow"), now=NOW)
+
+    assert ordered == ("healthy-slow", "degraded-fast")
+
+
+def test_measured_healthy_model_is_preferred_to_unmeasured_model() -> None:
+    registry = ModelHealthRegistry()
+    registry.record_success("measured", 3.0, now=NOW)
+
+    ordered = registry.order_candidates(("unmeasured", "measured"), now=NOW)
+
+    assert ordered == ("measured", "unmeasured")
+
+
+def test_equal_latency_preserves_configured_priority() -> None:
+    registry = ModelHealthRegistry()
+    registry.record_success("primary", 2.0, now=NOW)
+    registry.record_success("fallback", 2.0, now=NOW)
+
+    ordered = registry.order_candidates(("primary", "fallback"), now=NOW)
+
+    assert ordered == ("primary", "fallback")
+
+
 def test_invalid_registry_configuration_is_rejected() -> None:
     with pytest.raises(ValueError, match="failure_threshold"):
         ModelHealthRegistry(failure_threshold=0)
