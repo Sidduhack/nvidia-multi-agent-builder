@@ -54,15 +54,21 @@ async def test_orchestrator_respects_parallel_limit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_routes_each_agent_to_its_model() -> None:
+async def test_orchestrator_delegates_model_routing_to_runner() -> None:
     runner = RecordingRunner()
     orchestrator = MultiAgentOrchestrator(runner, FakeSettings(), max_parallel_agents=4)
-    await orchestrator.execute("Build a calculator application", "Planner says build it safely")
+    result = await orchestrator.execute("Build a calculator application", "Planner says build it safely")
 
+    # The orchestrator intentionally passes no explicit model. The execution
+    # service can therefore try the verified primary/fallback route per agent.
     assert runner.calls == [
-        *((agent_id, f"test/{agent_id}") for agent_id in SPECIALIST_AGENTS),
-        ("reviewer", "test/reviewer"),
+        *((agent_id, None) for agent_id in SPECIALIST_AGENTS),
+        ("reviewer", None),
     ]
+    assert [item.model for item in result.specialist_results] == [
+        f"test/{agent_id}" for agent_id in SPECIALIST_AGENTS
+    ]
+    assert result.review.model == "test/reviewer"
 
 
 @pytest.mark.asyncio
