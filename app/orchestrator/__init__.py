@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Protocol
 
 from app.execution import AgentExecutionResult
 
@@ -47,6 +47,7 @@ class AgentRunRecord:
     elapsed_seconds: float
     result: AgentExecutionResult | None = None
     error: str | None = None
+    checkpointed: bool = False
 
 
 class OrchestrationError(RuntimeError):
@@ -66,8 +67,11 @@ class OrchestrationResult:
     runs: tuple[AgentRunRecord, ...] = ()
 
 
+CheckpointCallback = Callable[[str, AgentExecutionResult], None]
+
+
 class MultiAgentOrchestrator:
-    """Coordinate specialist execution from an approved planner output."""
+    """Coordinate specialists while allowing successful work to be resumed from checkpoints."""
 
     def __init__(
         self,
@@ -97,33 +101,45 @@ class MultiAgentOrchestrator:
                 elapsed,
                 exc,
             )
-            return AgentRunRecord(
-                agent_id=agent_id,
-                model=model,
-                elapsed_seconds=elapsed,
-                error=str(exc),
-            )
+            return AgentRunRecord(agent_id, model, elapsed, error=str(exc))
         elapsed = time.monotonic() - started
         logger.info("agent.completed id=%s model=%s elapsed=%.1fs", agent_id, model, elapsed)
-        return AgentRunRecord(
-            agent_id=agent_id,
-            model=model,
-            elapsed_seconds=elapsed,
-            result=result,
-        )
+        return AgentRunRecord(agent_id, model, elapsed, result=result)
 
-    async def execute(self, project_prompt: str, planner_output: str) -> OrchestrationResult:
+    async def execute(
+        self,
+        project_prompt: str,
+        planner_output: str,
+        *,
+        completed_results: dict[str, AgentExecutionResult] | None = None,
+        review_result: AgentExecutionResult | None = None,
+        on_checkpoint: CheckpointCallback | None = None,
+    ) -> OrchestrationResult:
         if not project_prompt.strip():
             raise ValueError("project_prompt must not be empty")
         if not planner_output.strip():
             raise ValueError("planner_output must not be empty")
 
+        cached = completed_results or {}
+
         async def run_specialist(agent_id: str) -> AgentRunRecord:
+            if agent_id in cached:
+                result = cached[agent_id]
+                return AgentRunRecord(
+                    agent_id=agent_id,
+                    model=result.model,
+                    elapsed_seconds=0.0,
+                    result=result,
+                    checkpointed=True,
+                )
             async with self._semaphore:
-                return await self._run_agent(
+                record = await self._run_agent(
                     agent_id,
                     self._specialist_task(agent_id, project_prompt, planner_output),
                 )
+                if record.result is not None and on_checkpoint is not None:
+                    on_checkpoint(agent_id, record.result)
+                return record
 
         records = tuple(
             await asyncio.gather(*(run_specialist(agent_id) for agent_id in SPECIALIST_AGENTS))
@@ -133,15 +149,25 @@ class MultiAgentOrchestrator:
         if failed is not None:
             raise OrchestrationError(failed, completed)
 
-        specialist_results = tuple(
-            record.result for record in records if record.result is not None
-        )
-        review_record = await self._run_agent(
-            "reviewer",
-            self._review_task(project_prompt, planner_output, specialist_results),
-        )
-        if review_record.result is None:
-            raise OrchestrationError(review_record, completed)
+        specialist_results = tuple(record.result for record in records if record.result is not None)
+
+        if review_result is not None:
+            review_record = AgentRunRecord(
+                agent_id="reviewer",
+                model=review_result.model,
+                elapsed_seconds=0.0,
+                result=review_result,
+                checkpointed=True,
+            )
+        else:
+            review_record = await self._run_agent(
+                "reviewer",
+                self._review_task(project_prompt, planner_output, specialist_results),
+            )
+            if review_record.result is None:
+                raise OrchestrationError(review_record, completed)
+            if on_checkpoint is not None:
+                on_checkpoint("reviewer", review_record.result)
 
         return OrchestrationResult(
             specialist_results=specialist_results,
@@ -165,9 +191,7 @@ class MultiAgentOrchestrator:
         planner_output: str,
         results: tuple[AgentExecutionResult, ...],
     ) -> str:
-        sections = "\n\n".join(
-            f"## {result.agent_id}\n{result.content}" for result in results
-        )
+        sections = "\n\n".join(f"## {result.agent_id}\n{result.content}" for result in results)
         return (
             f"Original project request:\n{project_prompt}\n\n"
             f"Planner output:\n{planner_output}\n\n"
