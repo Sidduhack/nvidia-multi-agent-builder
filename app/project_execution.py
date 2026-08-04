@@ -64,10 +64,11 @@ class ProjectExecutionService:
         try:
             planner = checkpoint.planner
             if planner is None:
+                # Let AgentExecutionService choose the verified planner route and
+                # transparently fall back if the primary NVIDIA model fails.
                 planner = await self._runner.execute(
                     "planner",
                     self._planner_task(project),
-                    model=self._model_resolver.model_for_agent("planner"),
                 )
                 self._checkpoints.save_planner(project_id, planner)
 

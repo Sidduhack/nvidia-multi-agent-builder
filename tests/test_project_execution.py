@@ -23,7 +23,7 @@ class FakeRunner:
             raise RuntimeError("provider failed")
         return AgentExecutionResult(
             agent_id=agent_id,
-            model=model or "test/default",
+            model=model or f"test/{agent_id}",
             content=f"{agent_id} output",
             usage={},
         )
@@ -51,11 +51,12 @@ async def test_start_runs_full_orchestration_and_completes_project() -> None:
     assert result.planner_output == "planner output"
     assert store.get(project.id).status is ProjectStatus.COMPLETED  # type: ignore[union-attr]
     assert runner.calls[0][0] == "planner"
-    assert runner.calls[0][2] == "test/planner"
+    assert runner.calls[0][2] is None
     assert "Demo project" in runner.calls[0][1]
     assert tuple(item.agent_id for item in result.orchestration.specialist_results) == SPECIALIST_AGENTS
     assert result.orchestration.review.agent_id == "reviewer"
     assert [call[0] for call in runner.calls] == ["planner", *SPECIALIST_AGENTS, "reviewer"]
+    assert all(call[2] is None for call in runner.calls)
 
 
 @pytest.mark.asyncio
