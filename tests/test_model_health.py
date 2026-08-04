@@ -70,7 +70,7 @@ def test_success_recovers_model_and_clears_cooldown() -> None:
     assert health.cooldown_until is None
 
 
-def test_candidate_order_prefers_healthy_then_degraded_then_cooldown() -> None:
+def test_candidate_order_prefers_healthy_and_skips_cooldown() -> None:
     registry = ModelHealthRegistry(failure_threshold=2, cooldown_seconds=60)
     registry.record_failure("degraded", now=NOW)
     registry.record_failure("cooldown", now=NOW)
@@ -81,7 +81,35 @@ def test_candidate_order_prefers_healthy_then_degraded_then_cooldown() -> None:
         now=NOW,
     )
 
-    assert ordered == ("healthy", "degraded", "cooldown")
+    assert ordered == ("healthy", "degraded")
+
+
+def test_all_cooldown_candidates_are_retained_as_emergency_safety_net() -> None:
+    registry = ModelHealthRegistry(failure_threshold=1, cooldown_seconds=60)
+    candidates = ("primary", "fallback-one", "fallback-two")
+    for model in candidates:
+        registry.record_failure(model, now=NOW)
+
+    ordered = registry.order_candidates(candidates, now=NOW)
+
+    assert ordered == candidates
+
+
+def test_expired_cooldown_candidate_can_reenter_routing() -> None:
+    registry = ModelHealthRegistry(failure_threshold=1, cooldown_seconds=60)
+    registry.record_failure("primary", now=NOW)
+
+    ordered_during_cooldown = registry.order_candidates(
+        ("primary", "fallback"),
+        now=NOW,
+    )
+    ordered_after_cooldown = registry.order_candidates(
+        ("primary", "fallback"),
+        now=NOW + timedelta(seconds=61),
+    )
+
+    assert ordered_during_cooldown == ("fallback",)
+    assert ordered_after_cooldown == ("fallback", "primary")
 
 
 def test_invalid_registry_configuration_is_rejected() -> None:
