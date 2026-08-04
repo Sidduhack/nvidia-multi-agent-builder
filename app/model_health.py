@@ -111,10 +111,13 @@ class ModelHealthRegistry:
         *,
         now: datetime | None = None,
     ) -> tuple[str, ...]:
-        """Prefer healthy then degraded models and skip active cooldowns when possible.
+        """Order candidates by health, observed latency, then configured priority.
 
-        If every candidate is cooling down, return the original candidate chain as an
-        emergency safety net so routing never produces an empty execution plan.
+        Healthy models are always preferred to degraded models. Within the same
+        health state, models with successful latency history are ordered fastest
+        first. Unmeasured models retain configured priority behind measured peers.
+        Active cooldowns are skipped unless every candidate is cooling down, in
+        which case the original chain is retained as an emergency safety net.
         """
         indexed = list(enumerate(candidates))
         active = [
@@ -130,7 +133,21 @@ class ModelHealthRegistry:
             ModelHealthState.DEGRADED: 1,
             ModelHealthState.COOLDOWN: 2,
         }
-        active.sort(key=lambda item: (rank[self.get(item[1]).state(now=now)], item[0]))
+
+        def sort_key(item: tuple[int, str]) -> tuple[int, int, float, int]:
+            configured_index, model = item
+            health = self.get(model)
+            latency = health.average_latency_seconds
+            measured_rank = 0 if latency is not None else 1
+            latency_rank = latency if latency is not None else float("inf")
+            return (
+                rank[health.state(now=now)],
+                measured_rank,
+                latency_rank,
+                configured_index,
+            )
+
+        active.sort(key=sort_key)
         return tuple(model for _, model in active)
 
     def snapshot(self) -> tuple[ModelHealth, ...]:
