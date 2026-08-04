@@ -3,7 +3,6 @@ from datetime import UTC, datetime, timedelta
 from app.model_health import ModelHealth
 from app.sqlite_model_health_store import SQLiteModelHealthStore
 
-
 NOW = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
 
 
