@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.model_health_store import ModelHealthStore
 
 
 class ModelHealthState(StrEnum):
@@ -32,13 +36,14 @@ class ModelHealth:
 
 
 class ModelHealthRegistry:
-    """In-memory runtime health and latency history for model routing decisions."""
+    """Runtime model health with optional durable persistence."""
 
     def __init__(
         self,
         *,
         failure_threshold: int = 2,
         cooldown_seconds: float = 60.0,
+        store: ModelHealthStore | None = None,
     ) -> None:
         if failure_threshold < 1:
             raise ValueError("failure_threshold must be positive")
@@ -46,7 +51,10 @@ class ModelHealthRegistry:
             raise ValueError("cooldown_seconds must be positive")
         self._failure_threshold = failure_threshold
         self._cooldown = timedelta(seconds=cooldown_seconds)
+        self._store = store
         self._models: dict[str, ModelHealth] = {}
+        if store is not None:
+            self._models = {health.model: health for health in store.load()}
 
     def get(self, model: str) -> ModelHealth:
         return self._models.get(model, ModelHealth(model=model))
@@ -77,7 +85,7 @@ class ModelHealthRegistry:
             last_success=current,
             cooldown_until=None,
         )
-        self._models[model] = updated
+        self._save(updated)
         return updated
 
     def record_failure(
@@ -99,8 +107,13 @@ class ModelHealthRegistry:
             last_failure=current,
             cooldown_until=cooldown_until,
         )
-        self._models[model] = updated
+        self._save(updated)
         return updated
+
+    def _save(self, health: ModelHealth) -> None:
+        self._models[health.model] = health
+        if self._store is not None:
+            self._store.save(health)
 
     def available(self, model: str, *, now: datetime | None = None) -> bool:
         return self.get(model).state(now=now) is not ModelHealthState.COOLDOWN
