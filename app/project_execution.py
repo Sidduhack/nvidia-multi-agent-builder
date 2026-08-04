@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
+from app.checkpoints import CheckpointStore, checkpoint_store
 from app.execution import AgentExecutionResult
 from app.orchestrator import MultiAgentOrchestrator, OrchestrationResult
 from app.project_store import Project, ProjectStatus, ProjectStore
@@ -31,7 +32,7 @@ class ProjectExecutionResult:
 
 
 class ProjectExecutionService:
-    """Own project state transitions while delegating AI work to the agent runtime."""
+    """Own project state transitions and resume successful AI work from checkpoints."""
 
     def __init__(
         self,
@@ -40,10 +41,12 @@ class ProjectExecutionService:
         model_resolver: ModelResolver,
         *,
         max_parallel_agents: int = 2,
+        checkpoints: CheckpointStore | None = None,
     ) -> None:
         self._store = store
         self._runner = runner
         self._model_resolver = model_resolver
+        self._checkpoints = checkpoints or checkpoint_store
         self._orchestrator = MultiAgentOrchestrator(
             runner,
             model_resolver,
@@ -52,18 +55,37 @@ class ProjectExecutionService:
 
     async def start(self, project_id: UUID) -> ProjectExecutionResult:
         project = self._require_project(project_id)
-        if project.status is not ProjectStatus.CREATED:
+        if project.status not in (ProjectStatus.CREATED, ProjectStatus.FAILED):
             raise ValueError(f"project cannot start from status {project.status}")
 
+        checkpoint = self._checkpoints.get(project_id)
         self._store.set_status(project_id, ProjectStatus.PLANNING)
+
         try:
-            planner = await self._runner.execute(
-                "planner",
-                self._planner_task(project),
-                model=self._model_resolver.model_for_agent("planner"),
-            )
+            planner = checkpoint.planner
+            if planner is None:
+                planner = await self._runner.execute(
+                    "planner",
+                    self._planner_task(project),
+                    model=self._model_resolver.model_for_agent("planner"),
+                )
+                self._checkpoints.save_planner(project_id, planner)
+
             self._store.set_status(project_id, ProjectStatus.RUNNING)
-            orchestration = await self._orchestrator.execute(project.prompt, planner.content)
+
+            def save_checkpoint(agent_id: str, result: AgentExecutionResult) -> None:
+                if agent_id == "reviewer":
+                    self._checkpoints.save_reviewer(project_id, result)
+                else:
+                    self._checkpoints.save_specialist(project_id, agent_id, result)
+
+            orchestration = await self._orchestrator.execute(
+                project.prompt,
+                planner.content,
+                completed_results=checkpoint.specialists,
+                review_result=checkpoint.reviewer,
+                on_checkpoint=save_checkpoint,
+            )
         except Exception:
             self._store.set_status(project_id, ProjectStatus.FAILED)
             raise
