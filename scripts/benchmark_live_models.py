@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 from app.core.config import Settings
 from app.model_health import ModelHealthRegistry
 from app.model_registry import VERIFIED_MODEL_ROUTES
-from app.providers.base import CompletionRequest, Message
+from app.providers.base import ChatMessage, CompletionRequest
 from app.providers.nvidia import NvidiaProvider
 
 
@@ -36,7 +36,7 @@ async def probe(
 ) -> tuple[str, str, float | None, str]:
     request = CompletionRequest(
         model=model,
-        messages=[Message(role="user", content="Reply with exactly: BENCHMARK OK")],
+        messages=[ChatMessage(role="user", content="Reply with exactly: BENCHMARK OK")],
         temperature=0.0,
         max_tokens=32,
     )
@@ -104,11 +104,7 @@ async def main() -> None:
         )
         print(f"{index}. {model} | {item.state().value} | avg={latency}")
 
-    cooling = [
-        model
-        for model in route.candidates
-        if not health.available(model)
-    ]
+    cooling = [model for model in route.candidates if not health.available(model)]
     if cooling:
         print("\nCOOLDOWN / SKIPPED")
         print("------------------")
