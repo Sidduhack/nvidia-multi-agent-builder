@@ -1,11 +1,10 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from app.model_health import ModelHealthRegistry, ModelHealthState
 
-
-NOW = datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
 
 
 def test_unknown_model_starts_healthy() -> None:

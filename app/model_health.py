@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 
@@ -23,7 +23,7 @@ class ModelHealth:
     cooldown_until: datetime | None = None
 
     def state(self, *, now: datetime | None = None) -> ModelHealthState:
-        current = now or datetime.now(timezone.utc)
+        current = now or datetime.now(UTC)
         if self.cooldown_until is not None and current < self.cooldown_until:
             return ModelHealthState.COOLDOWN
         if self.consecutive_failures > 0:
@@ -60,7 +60,7 @@ class ModelHealthRegistry:
     ) -> ModelHealth:
         if latency_seconds < 0:
             raise ValueError("latency_seconds must not be negative")
-        current = now or datetime.now(timezone.utc)
+        current = now or datetime.now(UTC)
         previous = self.get(model)
         successes = previous.success_count + 1
         if previous.average_latency_seconds is None:
@@ -86,7 +86,7 @@ class ModelHealthRegistry:
         *,
         now: datetime | None = None,
     ) -> ModelHealth:
-        current = now or datetime.now(timezone.utc)
+        current = now or datetime.now(UTC)
         previous = self.get(model)
         consecutive = previous.consecutive_failures + 1
         cooldown_until = previous.cooldown_until
