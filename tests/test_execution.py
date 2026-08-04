@@ -3,7 +3,8 @@ from collections.abc import AsyncIterator
 import pytest
 
 from app.execution import AgentExecutionService, ModelFallbackError
-from app.model_registry import MINIMAX_M3, NEMOTRON_SUPER
+from app.model_health import ModelHealthRegistry
+from app.model_registry import DEEPSEEK_V4_PRO, MINIMAX_M3, NEMOTRON_SUPER
 from app.performance import PerformanceController, PerformanceLimits
 from app.providers.base import AIProvider, CompletionRequest, CompletionResponse
 
@@ -83,15 +84,13 @@ async def test_execution_falls_back_when_primary_model_fails() -> None:
     assert result.model != MINIMAX_M3
     assert [request.model for request in provider.requests][:2] == [
         MINIMAX_M3,
-        "deepseek-ai/deepseek-v4-pro",
+        DEEPSEEK_V4_PRO,
     ]
 
 
 @pytest.mark.asyncio
 async def test_execution_uses_later_fallback_after_multiple_failures() -> None:
-    provider = FakeProvider(
-        failing_models={MINIMAX_M3, "deepseek-ai/deepseek-v4-pro"}
-    )
+    provider = FakeProvider(failing_models={MINIMAX_M3, DEEPSEEK_V4_PRO})
     service = AgentExecutionService(provider, default_model="test/default")
 
     result = await service.execute("frontend", "Implement a concise frontend.")
@@ -99,7 +98,7 @@ async def test_execution_uses_later_fallback_after_multiple_failures() -> None:
     assert result.model == NEMOTRON_SUPER
     assert [request.model for request in provider.requests] == [
         MINIMAX_M3,
-        "deepseek-ai/deepseek-v4-pro",
+        DEEPSEEK_V4_PRO,
         NEMOTRON_SUPER,
     ]
 
@@ -107,11 +106,7 @@ async def test_execution_uses_later_fallback_after_multiple_failures() -> None:
 @pytest.mark.asyncio
 async def test_execution_raises_after_all_model_candidates_fail() -> None:
     provider = FakeProvider(
-        failing_models={
-            MINIMAX_M3,
-            "deepseek-ai/deepseek-v4-pro",
-            NEMOTRON_SUPER,
-        }
+        failing_models={MINIMAX_M3, DEEPSEEK_V4_PRO, NEMOTRON_SUPER}
     )
     service = AgentExecutionService(provider, default_model="test/default")
 
@@ -122,7 +117,7 @@ async def test_execution_raises_after_all_model_candidates_fail() -> None:
     assert len(caught.value.failures) == 3
     assert [request.model for request in provider.requests] == [
         MINIMAX_M3,
-        "deepseek-ai/deepseek-v4-pro",
+        DEEPSEEK_V4_PRO,
         NEMOTRON_SUPER,
     ]
 
@@ -139,4 +134,66 @@ async def test_explicit_model_failure_does_not_fallback() -> None:
             model="test/override",
         )
 
+    assert [request.model for request in provider.requests] == ["test/override"]
+
+
+@pytest.mark.asyncio
+async def test_execution_records_model_success_health() -> None:
+    provider = FakeProvider()
+    health = ModelHealthRegistry()
+    service = AgentExecutionService(provider, default_model="test/default", model_health=health)
+
+    result = await service.execute("frontend", "Implement a concise frontend.")
+    model_health = health.get(result.model)
+
+    assert model_health.success_count == 1
+    assert model_health.failure_count == 0
+    assert model_health.average_latency_seconds is not None
+
+
+@pytest.mark.asyncio
+async def test_execution_records_failure_then_fallback_success() -> None:
+    provider = FakeProvider(failing_models={MINIMAX_M3})
+    health = ModelHealthRegistry()
+    service = AgentExecutionService(provider, default_model="test/default", model_health=health)
+
+    result = await service.execute("frontend", "Implement a concise frontend.")
+
+    assert result.model == DEEPSEEK_V4_PRO
+    assert health.get(MINIMAX_M3).failure_count == 1
+    assert health.get(DEEPSEEK_V4_PRO).success_count == 1
+
+
+@pytest.mark.asyncio
+async def test_execution_reorders_future_requests_away_from_degraded_primary() -> None:
+    provider = FakeProvider(failing_models={MINIMAX_M3})
+    health = ModelHealthRegistry(failure_threshold=2)
+    service = AgentExecutionService(provider, default_model="test/default", model_health=health)
+
+    first = await service.execute("frontend", "Implement the first frontend task.")
+    assert first.model == DEEPSEEK_V4_PRO
+    first_request_count = len(provider.requests)
+
+    second = await service.execute("frontend", "Implement the second frontend task.")
+    second_models = [request.model for request in provider.requests[first_request_count:]]
+
+    assert second.model == DEEPSEEK_V4_PRO
+    assert second_models == [DEEPSEEK_V4_PRO]
+    assert health.get(MINIMAX_M3).failure_count == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_model_override_ignores_health_reordering() -> None:
+    provider = FakeProvider()
+    health = ModelHealthRegistry(failure_threshold=1)
+    health.record_failure("test/override")
+    service = AgentExecutionService(provider, default_model="test/default", model_health=health)
+
+    result = await service.execute(
+        "frontend",
+        "Implement a concise frontend.",
+        model="test/override",
+    )
+
+    assert result.model == "test/override"
     assert [request.model for request in provider.requests] == ["test/override"]
