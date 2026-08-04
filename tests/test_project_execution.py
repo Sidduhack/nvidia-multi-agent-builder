@@ -1,5 +1,6 @@
 import pytest
 
+from app.checkpoints import CheckpointStore
 from app.execution import AgentExecutionResult
 from app.orchestrator import SPECIALIST_AGENTS
 from app.project_execution import ProjectExecutionService
@@ -21,6 +22,31 @@ class FakeRunner:
         self.calls.append((agent_id, task, model))
         if self.fail:
             raise RuntimeError("provider failed")
+        return AgentExecutionResult(
+            agent_id=agent_id,
+            model=model or "test/default",
+            content=f"{agent_id} output",
+            usage={},
+        )
+
+
+class FailOnceRunner(FakeRunner):
+    def __init__(self, fail_agent: str) -> None:
+        super().__init__()
+        self.fail_agent = fail_agent
+        self.failed_once = False
+
+    async def execute(
+        self,
+        agent_id: str,
+        task: str,
+        *,
+        model: str | None = None,
+    ) -> AgentExecutionResult:
+        self.calls.append((agent_id, task, model))
+        if agent_id == self.fail_agent and not self.failed_once:
+            self.failed_once = True
+            raise RuntimeError(f"{agent_id} failed once")
         return AgentExecutionResult(
             agent_id=agent_id,
             model=model or "test/default",
@@ -95,3 +121,52 @@ async def test_start_rejects_duplicate_execution_without_extra_agent_calls() -> 
         await service.start(project.id)
 
     assert len(runner.calls) == first_run_call_count
+
+
+@pytest.mark.asyncio
+async def test_failed_project_resumes_from_checkpoints_without_duplicate_calls() -> None:
+    store = ProjectStore()
+    checkpoints = CheckpointStore()
+    project = store.create(
+        ProjectCreate(
+            name="Resumable project",
+            prompt="Build a sufficiently detailed project and resume safely after a provider failure.",
+        )
+    )
+    runner = FailOnceRunner("backend")
+    service = ProjectExecutionService(
+        store,
+        runner,
+        FakeModels(),
+        max_parallel_agents=1,
+        checkpoints=checkpoints,
+    )
+
+    with pytest.raises(RuntimeError, match="backend.*failed once"):
+        await service.start(project.id)
+
+    assert store.get(project.id).status is ProjectStatus.FAILED  # type: ignore[union-attr]
+    first_run_agents = [call[0] for call in runner.calls]
+    assert first_run_agents == ["planner", *SPECIALIST_AGENTS]
+
+    saved = checkpoints.get(project.id)
+    assert saved.planner is not None
+    assert "backend" not in saved.specialists
+    assert set(saved.specialists) == set(SPECIALIST_AGENTS) - {"backend"}
+    assert saved.reviewer is None
+
+    first_counts = {agent_id: first_run_agents.count(agent_id) for agent_id in set(first_run_agents)}
+
+    result = await service.start(project.id)
+
+    assert store.get(project.id).status is ProjectStatus.COMPLETED  # type: ignore[union-attr]
+    all_agents = [call[0] for call in runner.calls]
+    assert all_agents.count("planner") == first_counts["planner"] == 1
+    for agent_id in SPECIALIST_AGENTS:
+        expected = 2 if agent_id == "backend" else 1
+        assert all_agents.count(agent_id) == expected
+    assert all_agents.count("reviewer") == 1
+    assert result.orchestration.review.agent_id == "reviewer"
+    assert {run.agent_id for run in result.orchestration.runs if run.checkpointed} == (
+        set(SPECIALIST_AGENTS) - {"backend"}
+    )
