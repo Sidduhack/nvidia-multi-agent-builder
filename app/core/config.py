@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     nvidia_default_model: str = "openai/gpt-oss-120b"
 
+    # Persist learned model health/latency across application restarts.
+    model_health_database_path: str = "database/model_health.db"
+
     # Optional specialist overrides. Empty values fall back to nvidia_default_model.
     nvidia_model_planner: str = ""
     nvidia_model_architect: str = ""
