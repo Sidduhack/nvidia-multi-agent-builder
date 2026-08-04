@@ -1,0 +1,158 @@
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from app.model_health import ModelHealthRegistry, ModelHealthState
+
+NOW = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
+
+
+def test_unknown_model_starts_healthy() -> None:
+    registry = ModelHealthRegistry()
+    health = registry.get("test/model")
+
+    assert health.state(now=NOW) is ModelHealthState.HEALTHY
+    assert health.success_count == 0
+    assert health.failure_count == 0
+
+
+def test_success_tracks_count_and_average_latency() -> None:
+    registry = ModelHealthRegistry()
+
+    registry.record_success("test/model", 2.0, now=NOW)
+    health = registry.record_success("test/model", 4.0, now=NOW)
+
+    assert health.success_count == 2
+    assert health.average_latency_seconds == pytest.approx(3.0)
+    assert health.consecutive_failures == 0
+
+
+def test_single_failure_marks_model_degraded() -> None:
+    registry = ModelHealthRegistry(failure_threshold=2)
+
+    health = registry.record_failure("test/model", now=NOW)
+
+    assert health.failure_count == 1
+    assert health.consecutive_failures == 1
+    assert health.state(now=NOW) is ModelHealthState.DEGRADED
+
+
+def test_repeated_failures_put_model_in_cooldown() -> None:
+    registry = ModelHealthRegistry(failure_threshold=2, cooldown_seconds=60)
+
+    registry.record_failure("test/model", now=NOW)
+    health = registry.record_failure("test/model", now=NOW)
+
+    assert health.state(now=NOW) is ModelHealthState.COOLDOWN
+    assert registry.available("test/model", now=NOW) is False
+    assert health.cooldown_until == NOW + timedelta(seconds=60)
+
+
+def test_model_leaves_cooldown_after_deadline() -> None:
+    registry = ModelHealthRegistry(failure_threshold=1, cooldown_seconds=60)
+    registry.record_failure("test/model", now=NOW)
+
+    later = NOW + timedelta(seconds=61)
+
+    assert registry.get("test/model").state(now=later) is ModelHealthState.DEGRADED
+    assert registry.available("test/model", now=later) is True
+
+
+def test_success_recovers_model_and_clears_cooldown() -> None:
+    registry = ModelHealthRegistry(failure_threshold=1, cooldown_seconds=60)
+    registry.record_failure("test/model", now=NOW)
+
+    health = registry.record_success("test/model", 1.5, now=NOW + timedelta(seconds=5))
+
+    assert health.state(now=NOW + timedelta(seconds=5)) is ModelHealthState.HEALTHY
+    assert health.consecutive_failures == 0
+    assert health.cooldown_until is None
+
+
+def test_candidate_order_prefers_healthy_and_skips_cooldown() -> None:
+    registry = ModelHealthRegistry(failure_threshold=2, cooldown_seconds=60)
+    registry.record_failure("degraded", now=NOW)
+    registry.record_failure("cooldown", now=NOW)
+    registry.record_failure("cooldown", now=NOW)
+
+    ordered = registry.order_candidates(
+        ("cooldown", "degraded", "healthy"),
+        now=NOW,
+    )
+
+    assert ordered == ("healthy", "degraded")
+
+
+def test_all_cooldown_candidates_are_retained_as_emergency_safety_net() -> None:
+    registry = ModelHealthRegistry(failure_threshold=1, cooldown_seconds=60)
+    candidates = ("primary", "fallback-one", "fallback-two")
+    for model in candidates:
+        registry.record_failure(model, now=NOW)
+
+    ordered = registry.order_candidates(candidates, now=NOW)
+
+    assert ordered == candidates
+
+
+def test_expired_cooldown_candidate_can_reenter_routing() -> None:
+    registry = ModelHealthRegistry(failure_threshold=1, cooldown_seconds=60)
+    registry.record_failure("primary", now=NOW)
+
+    ordered_during_cooldown = registry.order_candidates(
+        ("primary", "fallback"),
+        now=NOW,
+    )
+    ordered_after_cooldown = registry.order_candidates(
+        ("primary", "fallback"),
+        now=NOW + timedelta(seconds=61),
+    )
+
+    assert ordered_during_cooldown == ("fallback",)
+    assert ordered_after_cooldown == ("fallback", "primary")
+
+
+def test_candidate_order_prefers_faster_measured_healthy_model() -> None:
+    registry = ModelHealthRegistry()
+    registry.record_success("slow", 8.0, now=NOW)
+    registry.record_success("fast", 1.5, now=NOW)
+
+    ordered = registry.order_candidates(("slow", "fast"), now=NOW)
+
+    assert ordered == ("fast", "slow")
+
+
+def test_health_state_has_priority_over_latency() -> None:
+    registry = ModelHealthRegistry(failure_threshold=2)
+    registry.record_success("healthy-slow", 8.0, now=NOW)
+    registry.record_success("degraded-fast", 0.5, now=NOW)
+    registry.record_failure("degraded-fast", now=NOW)
+
+    ordered = registry.order_candidates(("degraded-fast", "healthy-slow"), now=NOW)
+
+    assert ordered == ("healthy-slow", "degraded-fast")
+
+
+def test_measured_healthy_model_is_preferred_to_unmeasured_model() -> None:
+    registry = ModelHealthRegistry()
+    registry.record_success("measured", 3.0, now=NOW)
+
+    ordered = registry.order_candidates(("unmeasured", "measured"), now=NOW)
+
+    assert ordered == ("measured", "unmeasured")
+
+
+def test_equal_latency_preserves_configured_priority() -> None:
+    registry = ModelHealthRegistry()
+    registry.record_success("primary", 2.0, now=NOW)
+    registry.record_success("fallback", 2.0, now=NOW)
+
+    ordered = registry.order_candidates(("primary", "fallback"), now=NOW)
+
+    assert ordered == ("primary", "fallback")
+
+
+def test_invalid_registry_configuration_is_rejected() -> None:
+    with pytest.raises(ValueError, match="failure_threshold"):
+        ModelHealthRegistry(failure_threshold=0)
+    with pytest.raises(ValueError, match="cooldown_seconds"):
+        ModelHealthRegistry(cooldown_seconds=0)

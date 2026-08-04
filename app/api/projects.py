@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -8,10 +9,12 @@ from pydantic import BaseModel
 
 from app.core.config import get_settings
 from app.execution import AgentExecutionService
+from app.model_health import ModelHealthRegistry
 from app.performance import PerformanceController, PerformanceLimits
 from app.project_execution import ProjectExecutionResult, ProjectExecutionService
 from app.project_store import Project, ProjectCreate, ProjectStatus, ProjectSummary, store
 from app.providers.nvidia import NvidiaProvider, NvidiaProviderError
+from app.sqlite_model_health_store import SQLiteModelHealthStore
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
 
@@ -37,10 +40,18 @@ def get_project_execution_service() -> ProjectExecutionService:
         PerformanceLimits(max_parallel_agents=settings.max_parallel_agents)
     )
     provider = NvidiaProvider(settings)
+
+    health_database = Path(settings.model_health_database_path)
+    health_database.parent.mkdir(parents=True, exist_ok=True)
+    model_health = ModelHealthRegistry(
+        store=SQLiteModelHealthStore(health_database),
+    )
+
     runner = AgentExecutionService(
         provider,
         default_model=settings.nvidia_default_model,
         performance=performance,
+        model_health=model_health,
     )
     return ProjectExecutionService(
         store,
