@@ -88,24 +88,31 @@ class MultiAgentOrchestrator:
         self._semaphore = asyncio.Semaphore(max_parallel_agents)
 
     async def _run_agent(self, agent_id: str, task: str) -> AgentRunRecord:
-        model = self._model_resolver.model_for_agent(agent_id)
+        preferred_model = self._model_resolver.model_for_agent(agent_id)
         started = time.monotonic()
-        logger.info("agent.start id=%s model=%s", agent_id, model)
+        logger.info("agent.start id=%s preferred_model=%s", agent_id, preferred_model)
         try:
-            result = await self._runner.execute(agent_id, task, model=model)
+            # No explicit model is passed here. AgentExecutionService owns the verified
+            # primary/fallback route and returns the model that actually succeeded.
+            result = await self._runner.execute(agent_id, task)
         except Exception as exc:  # noqa: BLE001 -- agent failures are recorded, not suppressed
             elapsed = time.monotonic() - started
             logger.error(
-                "agent.failed id=%s model=%s elapsed=%.1fs error=%s",
+                "agent.failed id=%s preferred_model=%s elapsed=%.1fs error=%s",
                 agent_id,
-                model,
+                preferred_model,
                 elapsed,
                 exc,
             )
-            return AgentRunRecord(agent_id, model, elapsed, error=str(exc))
+            return AgentRunRecord(agent_id, preferred_model, elapsed, error=str(exc))
         elapsed = time.monotonic() - started
-        logger.info("agent.completed id=%s model=%s elapsed=%.1fs", agent_id, model, elapsed)
-        return AgentRunRecord(agent_id, model, elapsed, result=result)
+        logger.info(
+            "agent.completed id=%s model=%s elapsed=%.1fs",
+            agent_id,
+            result.model,
+            elapsed,
+        )
+        return AgentRunRecord(agent_id, result.model, elapsed, result=result)
 
     async def execute(
         self,
