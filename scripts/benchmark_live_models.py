@@ -38,7 +38,7 @@ async def probe(
         model=model,
         messages=[ChatMessage(role="user", content="Reply with exactly: BENCHMARK OK")],
         temperature=0.0,
-        max_tokens=32,
+        max_tokens=512,
     )
     started = monotonic()
     try:
