@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from app.agent_catalog import AgentDefinition, get_agent
+from app.model_health import ModelHealthRegistry
 from app.model_registry import route_for_agent
 from app.performance import PerformanceController
 from app.providers.base import AIProvider, ChatMessage, CompletionRequest, CompletionResponse
@@ -33,12 +35,14 @@ class AgentExecutionService:
         *,
         default_model: str,
         performance: PerformanceController | None = None,
+        model_health: ModelHealthRegistry | None = None,
     ) -> None:
         if not default_model.strip():
             raise ValueError("default_model must not be empty")
         self._provider = provider
         self._default_model = default_model.strip()
         self._performance = performance or PerformanceController()
+        self._model_health = model_health or ModelHealthRegistry()
 
     async def execute(
         self,
@@ -62,12 +66,18 @@ class AgentExecutionService:
                     )
                 )
 
+            started = time.monotonic()
             try:
                 response = await self._performance.run(operation)
             except Exception as exc:  # noqa: BLE001 -- fallback requires provider failure capture
+                self._model_health.record_failure(selected_model)
                 failures.append((selected_model, exc))
                 continue
 
+            self._model_health.record_success(
+                selected_model,
+                time.monotonic() - started,
+            )
             return AgentExecutionResult(
                 agent_id=agent.agent_id,
                 model=response.model,
@@ -83,7 +93,8 @@ class AgentExecutionService:
             if not selected_model:
                 raise ValueError("model must not be empty")
             return (selected_model,)
-        return route_for_agent(agent_id, default_model=self._default_model).candidates
+        candidates = route_for_agent(agent_id, default_model=self._default_model).candidates
+        return self._model_health.order_candidates(candidates)
 
     @staticmethod
     def _messages(agent: AgentDefinition, task: str) -> list[ChatMessage]:
@@ -102,3 +113,6 @@ class AgentExecutionService:
 
     def performance_snapshot(self):
         return self._performance.snapshot()
+
+    def model_health_snapshot(self):
+        return self._model_health.snapshot()
