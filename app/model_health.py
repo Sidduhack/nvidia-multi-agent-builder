@@ -111,15 +111,27 @@ class ModelHealthRegistry:
         *,
         now: datetime | None = None,
     ) -> tuple[str, ...]:
-        """Prefer healthy, then degraded models; keep cooldown models last as a safety net."""
+        """Prefer healthy then degraded models and skip active cooldowns when possible.
+
+        If every candidate is cooling down, return the original candidate chain as an
+        emergency safety net so routing never produces an empty execution plan.
+        """
         indexed = list(enumerate(candidates))
+        active = [
+            item
+            for item in indexed
+            if self.get(item[1]).state(now=now) is not ModelHealthState.COOLDOWN
+        ]
+        if not active:
+            return candidates
+
         rank = {
             ModelHealthState.HEALTHY: 0,
             ModelHealthState.DEGRADED: 1,
             ModelHealthState.COOLDOWN: 2,
         }
-        indexed.sort(key=lambda item: (rank[self.get(item[1]).state(now=now)], item[0]))
-        return tuple(model for _, model in indexed)
+        active.sort(key=lambda item: (rank[self.get(item[1]).state(now=now)], item[0]))
+        return tuple(model for _, model in active)
 
     def snapshot(self) -> tuple[ModelHealth, ...]:
         return tuple(self._models.values())
